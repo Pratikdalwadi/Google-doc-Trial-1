@@ -41,6 +41,7 @@
         </label>
         <input id="file-upload" type="file" accept="application/pdf,image/*" />
         <span id="file-name" class="file-name">No file chosen</span>
+        <span id="upload-error" class="error-message hidden"></span>
       </div>
       <button id="extract-button" disabled>Extract Information</button>
 
@@ -49,10 +50,35 @@
           <!-- Pages will be dynamically inserted here -->
         </div>
         <div id="results-container">
-          <div class="tabs">
-            <button class="tab-button active" data-tab="schema">Schema</button>
-            <button class="tab-button" data-tab="markdown">Markdown</button>
-            <button class="tab-button" data-tab="json">JSON</button>
+          <div class="results-header">
+            <div class="tabs">
+              <button class="tab-button active" data-tab="schema">
+                Schema
+              </button>
+              <button class="tab-button" data-tab="markdown">Markdown</button>
+              <button class="tab-button" data-tab="json">JSON</button>
+            </div>
+            <div class="export-container">
+              <button id="export-button" disabled>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  height="20px"
+                  viewBox="0 0 24 24"
+                  width="20px"
+                  fill="currentColor"
+                >
+                  <path d="M0 0h24v24H0V0z" fill="none" />
+                  <path
+                    d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
+                  />
+                </svg>
+                <span>Export</span>
+              </button>
+              <div id="export-dropdown" class="export-dropdown hidden">
+                <a href="#" id="export-csv">as CSV</a>
+                <a href="#" id="export-txt">as TXT</a>
+              </div>
+            </div>
           </div>
           <div class="tab-content">
             <div id="schema-tab" class="tab-panel active">

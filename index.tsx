@@ -215,6 +215,9 @@ extractButton.addEventListener('click', async () => {
 -   **marginalia:** Text outside the main content block, like page numbers or headers/footers.
 -   **attestation:** Signature blocks or electronic signature confirmations.
 
+**Failure Condition:**
+- If an image is of such low quality that OCR is impossible or produces nonsensical text, you MUST return an empty 'extracted_elements' array.
+
 The output must be a single, valid JSON object that strictly adheres to the provided schema, with no additional text or explanations.`,
           },
           {
@@ -230,10 +233,31 @@ The output must be a single, valid JSON object that strictly adheres to the prov
 
     const parsedResult = JSON.parse(response.text);
     extractedData = parsedResult.extracted_elements || [];
-    displayMarkdownResults(extractedData);
-    displayJsonResults(parsedResult);
-    exportButton.disabled = extractedData.length === 0;
-    setActiveTab('markdown');
+
+    // Add specific guidance for low-quality images that result in empty extraction.
+    if (extractedData.length === 0 && file?.type.startsWith('image/')) {
+      markdownResultsContainer.innerHTML = `
+        <div class="error-panel">
+          <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+          <div>
+            <strong>OCR Quality Alert</strong>
+            <p>The text in the uploaded image could not be read clearly. For best results, please upload a higher-resolution image with good lighting and clear, typed text.</p>
+          </div>
+        </div>`;
+      displayJsonResults({
+        error: 'OCR_QUALITY_LOW',
+        message:
+          'The model returned no data, likely due to a low-quality source image.',
+      });
+      setActiveTab('markdown');
+      exportButton.disabled = true;
+    } else {
+      // Original logic for successful extraction
+      displayMarkdownResults(extractedData);
+      displayJsonResults(parsedResult);
+      exportButton.disabled = extractedData.length === 0;
+      setActiveTab('markdown');
+    }
   } catch (error) {
     console.error('Error extracting data:', error);
     markdownResultsContainer.innerHTML = `

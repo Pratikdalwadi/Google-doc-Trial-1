@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agentic Document Extraction</title>
+    <link rel="stylesheet" href="index.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script>
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "@google/genai": "https://esm.sh/@google/genai@^0.12.0"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1>Agentic Document Extraction</h1>
+      <p>
+        Upload a PDF or image to extract structured data with visual
+        traceability.
+      </p>
+
+      <div class="upload-container">
+        <label for="file-upload" class="custom-file-upload">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <path
+              d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"
+            />
+          </svg>
+          <span>Choose a file</span>
+        </label>
+        <input id="file-upload" type="file" accept="application/pdf,image/*" />
+        <span id="file-name" class="file-name">No file chosen</span>
+      </div>
+      <button id="extract-button" disabled>Extract Information</button>
+
+      <div id="content-container">
+        <div id="preview-container">
+          <!-- Pages will be dynamically inserted here -->
+        </div>
+        <div id="results-container">
+          <div class="tabs">
+            <button class="tab-button active" data-tab="schema">Schema</button>
+            <button class="tab-button" data-tab="markdown">Markdown</button>
+            <button class="tab-button" data-tab="json">JSON</button>
+          </div>
+          <div class="tab-content">
+            <div id="schema-tab" class="tab-panel active">
+              <!-- Schema will be dynamically inserted here -->
+            </div>
+            <div id="markdown-tab" class="tab-panel">
+              <div id="markdown-results"></div>
+            </div>
+            <div id="json-tab" class="tab-panel">
+              <pre><code id="json-results"></code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="loading-spinner" class="hidden">
+        <div class="spinner"></div>
+        <p>Extracting data... this may take a moment.</p>
+      </div>
+    </main>
+    <script type="module" src="index.tsx"></script>
+  </body>
+</html>

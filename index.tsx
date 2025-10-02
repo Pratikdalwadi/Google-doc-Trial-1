@@ -203,8 +203,12 @@ extractButton.addEventListener('click', async () => {
     - \`right\`: The distance from the left edge of the page to the right edge of the box (0.0 to 1.0).
     - \`bottom\`: The distance from the top edge of the page to the bottom edge of the box (0.0 to 1.0).
     - Provide up to 5 decimal places for precision.
-6.  **Granular Line Boxes for Tighter Fit:** For any element containing text that visibly spans multiple lines on the document (e.g., 'paragraph', long 'field' values), you MUST ALSO provide a 'line_boxes' array. Each item in this array should be a precise bounding box for a single line of text, also in the {left, top, right, bottom} format. This is crucial for creating a tight visual highlight.
-7.  **Element Categorization:** Classify each extracted element into one of the following types: 'field', 'field_group', 'table', 'paragraph', 'checkbox', 'logo', 'figure', 'marginalia', 'attestation'.
+6.  **Crucial for Accuracy (Bounding Boxes):**
+    - **Complete Enclosure:** The bounding box MUST completely encompass the entire logical element.
+    - **Handling Spaced Text (HIGH PRIORITY):** For text elements composed of multiple words with significant spacing between them (e.g., a "THANK YOU" sign), you MUST treat it as a *single element*. The bounding box MUST start at the beginning of the first character of the first word (e.g., 'T') and end at the very end of the last character of the last word (e.g., 'U').
+    - **Failure Condition Example:** Creating a bounding box that only covers "THANK" and ignores "YOU" is a critical failure. The model must recognize these as part of the same phrase and create one single, all-encompassing bounding box.
+7.  **Granular Line Boxes for Tighter Fit:** For any element containing text that visibly spans multiple lines on the document (e.g., 'paragraph', long 'field' values), you MUST ALSO provide a 'line_boxes' array. Each item in this array should be a precise bounding box for a single line of text, also in the {left, top, right, bottom} format. This is crucial for creating a tight visual highlight.
+8.  **Element Categorization:** Classify each extracted element into one of the following types: 'field', 'field_group', 'table', 'paragraph', 'checkbox', 'logo', 'figure', 'marginalia', 'attestation'.
 
 **Type-Specific Instructions:**
 -   **field_group:** This is the preferred way to organize data. Use it liberally for sets of logically related fields. The 'bounding_box' for a group MUST encompass all of its child fields. Provide a clear and descriptive 'label' for the group (e.g., "Patient Information").

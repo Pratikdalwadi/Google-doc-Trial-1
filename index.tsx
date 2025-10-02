@@ -510,6 +510,7 @@ function displayMarkdownResults(elements: any[]) {
 }
 
 function displayJsonResults(data: any) {
+  // jsonResultsContainer is the <code> element with id="json-results"
   jsonResultsContainer.innerHTML = ''; // Clear previous content
 
   // Helper for syntax highlighting a JSON string
@@ -537,46 +538,36 @@ function displayJsonResults(data: any) {
   // If there's no data or it's an error object without extracted_elements
   if (!data || !Array.isArray(data.extracted_elements)) {
     const content = syntaxHighlight(JSON.stringify(data, null, 2));
-    jsonResultsContainer.innerHTML = `<pre><code>${content}</code></pre>`;
+    jsonResultsContainer.innerHTML = content;
     return;
   }
 
-  // Start building the HTML within a <pre><code> structure
-  const pre = document.createElement('pre');
-  const code = document.createElement('code');
+  // Build the final HTML as a string
+  let finalHtml = '';
+  finalHtml += `{<br>  <span class="json-key">"extracted_elements"</span>: [<br>`;
 
-  // Add the opening part of the JSON object
-  code.innerHTML = `{<br>  <span class="json-key">"extracted_elements"</span>: [<br>`;
-
-  // Loop through each element and wrap it in a clickable div
   data.extracted_elements.forEach((element: any, index: number) => {
     const elementString = JSON.stringify(element, null, 2);
     const highlightedElementString = syntaxHighlight(elementString);
 
-    const elementDiv = document.createElement('div');
-    elementDiv.className = 'json-interactive-element';
-    elementDiv.dataset.elementIndex = String(index);
-
     // Indent the content for proper formatting inside <pre>
-    const indentedHtml = '    ' + highlightedElementString.replace(/\n/g, '\n    ');
-    elementDiv.innerHTML = indentedHtml;
+    const indentedHtml =
+      '    ' + highlightedElementString.replace(/\n/g, '\n    ');
 
-    code.appendChild(elementDiv);
+    finalHtml += `<div class="json-interactive-element" data-element-index="${String(
+      index,
+    )}">${indentedHtml}</div>`;
 
-    // Add a comma if it's not the last element
     if (index < data.extracted_elements.length - 1) {
-      code.appendChild(document.createTextNode(',\n'));
+      finalHtml += ',\n';
     } else {
-      code.appendChild(document.createTextNode('\n'));
+      finalHtml += '\n';
     }
   });
 
-  // Add the closing part
-  const closingText = document.createTextNode('  ]\n}');
-  code.appendChild(closingText);
+  finalHtml += '  ]\n}';
 
-  pre.appendChild(code);
-  jsonResultsContainer.appendChild(pre);
+  jsonResultsContainer.innerHTML = finalHtml;
 }
 
 function drawBoundingBox(element: any) {

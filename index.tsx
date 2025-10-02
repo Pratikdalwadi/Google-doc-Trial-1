@@ -188,22 +188,23 @@ extractButton.addEventListener('click', async () => {
             text: `You are an Agentic Document Extraction system. Your primary goal is to perform a comprehensive analysis of the uploaded document and return structured, accurate data with intelligent grouping and precise visual traceability.
 
 **Core Instructions:**
-1.  **Intelligent Grouping (Highest Priority):** You MUST actively identify and group logically related fields into a \`field_group\`. This is crucial for creating a clean, organized, and human-readable output. Examples of good grouping include:
+1.  **Analyze Document Type & OCR:** Detect if the document is a PDF or an image. For images, perform Optical Character Recognition (OCR) to read all text accurately before proceeding with extraction.
+2.  **Intelligent Grouping (Highest Priority):** You MUST actively identify and group logically related fields into a \`field_group\`. This is crucial for creating a clean, organized, and human-readable output. Examples of good grouping include:
     -   Patient Information (Name, DOB, Age, etc.)
     -   Provider Information (Name, Address, Phone, etc.)
     -   An entire address block (street, city, state, zip).
     Always prefer grouping over listing individual fields when a logical connection exists.
-2.  **Comprehensive Extraction:** You must extract ALL data from the document. Leave nothing out.
-3.  **Sequential Ordering:** The elements in the final 'extracted_elements' array must be sorted to strictly follow the top-to-bottom reading order of the source document.
-4.  **Precise Bounding Box Coordinates:** For every element, you MUST provide coordinates in a **normalized {left, top, right, bottom} format**.
+3.  **Comprehensive Extraction:** You must extract ALL data from the document. Leave nothing out.
+4.  **Sequential Ordering:** The elements in the final 'extracted_elements' array must be sorted to strictly follow the top-to-bottom reading order of the source document.
+5.  **Precise Bounding Box Coordinates:** For every element, you MUST provide coordinates in a **normalized {left, top, right, bottom} format**.
     - The origin (0,0) is the top-left corner of the page.
     - \`left\`: The distance from the left edge of the page to the left edge of the box (0.0 to 1.0).
     - \`top\`: The distance from the top edge of the page to the top edge of the box (0.0 to 1.0).
     - \`right\`: The distance from the left edge of the page to the right edge of the box (0.0 to 1.0).
     - \`bottom\`: The distance from the top edge of the page to the bottom edge of the box (0.0 to 1.0).
     - Provide up to 5 decimal places for precision.
-5.  **Granular Line Boxes for Tighter Fit:** For any element containing text that visibly spans multiple lines on the document (e.g., 'paragraph', long 'field' values), you MUST ALSO provide a 'line_boxes' array. Each item in this array should be a precise bounding box for a single line of text, also in the {left, top, right, bottom} format. This is crucial for creating a tight visual highlight.
-6.  **Element Categorization:** Classify each extracted element into one of the following types: 'field', 'field_group', 'table', 'paragraph', 'checkbox', 'logo', 'figure', 'marginalia', 'attestation'.
+6.  **Granular Line Boxes for Tighter Fit:** For any element containing text that visibly spans multiple lines on the document (e.g., 'paragraph', long 'field' values), you MUST ALSO provide a 'line_boxes' array. Each item in this array should be a precise bounding box for a single line of text, also in the {left, top, right, bottom} format. This is crucial for creating a tight visual highlight.
+7.  **Element Categorization:** Classify each extracted element into one of the following types: 'field', 'field_group', 'table', 'paragraph', 'checkbox', 'logo', 'figure', 'marginalia', 'attestation'.
 
 **Type-Specific Instructions:**
 -   **field_group:** This is the preferred way to organize data. Use it liberally for sets of logically related fields. The 'bounding_box' for a group MUST encompass all of its child fields. Provide a clear and descriptive 'label' for the group (e.g., "Patient Information").
@@ -492,12 +493,6 @@ function drawBoundingBox(element: any) {
 
   if (!previewElement) return;
 
-  // Scroll the element into view once before drawing any boxes.
-  previewElement.scrollIntoView({
-    behavior: 'auto',
-    block: 'center',
-  });
-
   // Calculate scaling and offset details once.
   const displayWidth = previewElement.clientWidth;
   const displayHeight = previewElement.clientHeight;
@@ -531,6 +526,27 @@ function drawBoundingBox(element: any) {
     elementRect.top - containerRect.top + previewContainer.scrollTop;
   const relativeLeft =
     elementRect.left - containerRect.left + previewContainer.scrollLeft;
+
+  // --- PRECISE SCROLL LOGIC ---
+  // Use the first box to determine the scroll position. If there are multiple
+  // boxes (e.g., line_boxes), this ensures we scroll to the start of the element.
+  const firstBox = boxesToDraw[0];
+  const boxY = firstBox.top * contentHeight * scale + offsetY;
+  const boxHeight = (firstBox.bottom - firstBox.top) * contentHeight * scale;
+
+  // Calculate the target scroll position to center the bounding box vertically
+  // within the visible area of the preview container.
+  const targetScrollTop =
+    relativeTop + // Top of the page/canvas within the scrollable area
+    boxY + // Top of the bounding box within the page/canvas
+    boxHeight / 2 - // Middle of the bounding box
+    previewContainer.clientHeight / 2; // Middle of the visible container area
+
+  previewContainer.scrollTo({
+    top: targetScrollTop,
+    behavior: 'smooth',
+  });
+  // --- END PRECISE SCROLL LOGIC ---
 
   // Draw a div for each box.
   boxesToDraw.forEach((box: any) => {

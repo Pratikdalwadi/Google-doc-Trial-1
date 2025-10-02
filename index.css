@@ -397,7 +397,34 @@ button:disabled {
 #json-tab code {
   font-family: 'Courier New', Courier, monospace;
   font-size: 0.9rem;
-  color: #333;
+}
+
+/* --- JSON View Specific Styles --- */
+.json-key {
+  color: #a31515;
+}
+.json-string {
+  color: #2a00ff;
+}
+.json-number {
+  color: #098658;
+}
+.json-boolean {
+  color: #0000ff;
+}
+.json-null {
+  color: #808080;
+}
+
+.json-interactive-element {
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+  display: block;
+}
+
+.json-interactive-element:hover {
+  background-color: #e8f0fe;
 }
 
 .result-item {

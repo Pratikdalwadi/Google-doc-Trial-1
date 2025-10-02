@@ -287,6 +287,22 @@ tabsContainer.addEventListener('click', (e) => {
   }
 });
 
+jsonResultsContainer.addEventListener('click', (e) => {
+  const target = e.target as HTMLElement;
+  // Find the parent div that has the data-element-index
+  const elementWrapper = target.closest(
+    '.json-interactive-element',
+  ) as HTMLElement;
+
+  if (elementWrapper && elementWrapper.dataset.elementIndex) {
+    const index = parseInt(elementWrapper.dataset.elementIndex, 10);
+    if (!isNaN(index) && extractedData[index]) {
+      const element = extractedData[index];
+      drawBoundingBox(element);
+    }
+  }
+});
+
 exportButton.addEventListener('click', () => {
   exportDropdown.classList.toggle('hidden');
 });
@@ -494,7 +510,73 @@ function displayMarkdownResults(elements: any[]) {
 }
 
 function displayJsonResults(data: any) {
-  jsonResultsContainer.textContent = JSON.stringify(data, null, 2);
+  jsonResultsContainer.innerHTML = ''; // Clear previous content
+
+  // Helper for syntax highlighting a JSON string
+  const syntaxHighlight = (jsonString: string) => {
+    return jsonString
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(
+        /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+        function (match) {
+          let cls = 'json-number';
+          if (/^"/.test(match)) {
+            cls = /:$/.test(match) ? 'json-key' : 'json-string';
+          } else if (/true|false/.test(match)) {
+            cls = 'json-boolean';
+          } else if (/null/.test(match)) {
+            cls = 'json-null';
+          }
+          return `<span class="${cls}">${match}</span>`;
+        },
+      );
+  };
+
+  // If there's no data or it's an error object without extracted_elements
+  if (!data || !Array.isArray(data.extracted_elements)) {
+    const content = syntaxHighlight(JSON.stringify(data, null, 2));
+    jsonResultsContainer.innerHTML = `<pre><code>${content}</code></pre>`;
+    return;
+  }
+
+  // Start building the HTML within a <pre><code> structure
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+
+  // Add the opening part of the JSON object
+  code.innerHTML = `{<br>  <span class="json-key">"extracted_elements"</span>: [<br>`;
+
+  // Loop through each element and wrap it in a clickable div
+  data.extracted_elements.forEach((element: any, index: number) => {
+    const elementString = JSON.stringify(element, null, 2);
+    const highlightedElementString = syntaxHighlight(elementString);
+
+    const elementDiv = document.createElement('div');
+    elementDiv.className = 'json-interactive-element';
+    elementDiv.dataset.elementIndex = String(index);
+
+    // Indent the content for proper formatting inside <pre>
+    const indentedHtml = '    ' + highlightedElementString.replace(/\n/g, '\n    ');
+    elementDiv.innerHTML = indentedHtml;
+
+    code.appendChild(elementDiv);
+
+    // Add a comma if it's not the last element
+    if (index < data.extracted_elements.length - 1) {
+      code.appendChild(document.createTextNode(',\n'));
+    } else {
+      code.appendChild(document.createTextNode('\n'));
+    }
+  });
+
+  // Add the closing part
+  const closingText = document.createTextNode('  ]\n}');
+  code.appendChild(closingText);
+
+  pre.appendChild(code);
+  jsonResultsContainer.appendChild(pre);
 }
 
 function drawBoundingBox(element: any) {

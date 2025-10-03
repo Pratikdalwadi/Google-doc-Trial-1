@@ -28,6 +28,18 @@ const exportButton = document.getElementById(
 const exportDropdown = document.getElementById('export-dropdown');
 const exportCsvButton = document.getElementById('export-csv');
 const exportTxtButton = document.getElementById('export-txt');
+const ocrSlider = document.getElementById(
+  'ocr-threshold-slider',
+) as HTMLInputElement;
+const ocrValueSpan = document.getElementById('ocr-threshold-value');
+const feedbackContainer = document.getElementById('feedback-container');
+const feedbackGoodButton = document.getElementById(
+  'feedback-good',
+) as HTMLButtonElement;
+const feedbackBadButton = document.getElementById(
+  'feedback-bad',
+) as HTMLButtonElement;
+const feedbackThanksSpan = document.getElementById('feedback-thanks');
 
 let file: File | null = null;
 let fileData: {
@@ -38,6 +50,11 @@ let pageDimensions: { width: number; height: number }[] = [];
 let extractedData: any[] = [];
 let isThrottled = false;
 let lastHoveredElementIndex = -1;
+// State for the bounding box editor
+let currentlyEditing: {
+  index: number;
+  originalElement: any; // A deep copy for cancellation
+} | null = null;
 
 // The schema is now a constant to be used for both the API call and the UI display.
 const EXTRACTION_SCHEMA = {
@@ -134,81 +151,48 @@ const EXTRACTION_SCHEMA = {
   },
 };
 
-// --- Event Listeners ---
-
-fileUpload.addEventListener('change', async (event) => {
-  const target = event.target as HTMLInputElement;
-  if (target.files && target.files[0]) {
-    const selectedFile = target.files[0];
-    const supportedTypes = [
-      'application/pdf',
-      'image/jpeg',
-      'image/png',
-      'image/gif',
-      'image/webp',
-    ];
-
-    if (!supportedTypes.includes(selectedFile.type)) {
-      uploadError.textContent =
-        'Unsupported file type. Please upload a PDF or an image.';
-      uploadError.classList.remove('hidden');
-      // Reset state
-      fileUpload.value = '';
-      fileNameSpan.textContent = 'No file chosen';
-      extractButton.disabled = true;
-      file = null;
-      return;
-    }
-
-    uploadError.classList.add('hidden'); // Hide error if file is valid
-    file = selectedFile;
-    fileNameSpan.textContent = file.name;
-    extractButton.disabled = false;
-    await renderPreview(file);
-  } else {
-    fileNameSpan.textContent = 'No file chosen';
-    extractButton.disabled = true;
-    clearPreview();
-  }
-});
-
-extractButton.addEventListener('click', async () => {
+// --- Core Extraction Logic ---
+async function runExtraction() {
   if (!file || !fileData) return;
+
+  // Cancel any ongoing edit before running a new extraction
+  if (currentlyEditing) {
+    exitEditMode(false);
+  }
 
   loadingSpinner.classList.remove('hidden');
   clearResults();
   clearBoundingBoxes();
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          {
-            text: `You are an Agentic Document Extraction system. Your primary goal is to perform a comprehensive analysis of the uploaded document and return structured, accurate data with intelligent grouping and precise visual traceability.
+    const ocrThreshold = parseInt(ocrSlider.value, 10);
+    const prompt = `You are an Agentic Document Extraction system. Your primary goal is to perform a comprehensive analysis of the uploaded document and return structured, accurate data with intelligent grouping and precise visual traceability.
 
 **Core Instructions:**
 1.  **Analyze Document Type & OCR:** Detect if the document is a PDF or an image. For images, perform Optical Character Recognition (OCR) to read all text accurately before proceeding with extraction.
-2.  **Intelligent Grouping (Highest Priority):** You MUST actively identify and group logically related fields into a \`field_group\`. This is crucial for creating a clean, organized, and human-readable output. Examples of good grouping include:
+2.  **OCR Confidence Threshold:** For image-based documents, you MUST only consider text recognized with a confidence level of ${ocrThreshold}% or higher. Discard any text below this threshold.
+3.  **Intelligent Grouping (Highest Priority):** You MUST actively identify and group logically related fields into a \`field_group\`. This is crucial for creating a clean, organized, and human-readable output. Examples of good grouping include:
     -   Patient Information (Name, DOB, Age, etc.)
     -   Provider Information (Name, Address, Phone, etc.)
     -   An entire address block (street, city, state, zip).
     Always prefer grouping over listing individual fields when a logical connection exists.
-3.  **Comprehensive Extraction:** You must extract ALL data from the document. Leave nothing out.
-4.  **Sequential Ordering:** The elements in the final 'extracted_elements' array must be sorted to strictly follow the top-to-bottom reading order of the source document.
-5.  **Precise Bounding Box Coordinates:** For every element, you MUST provide coordinates in a **normalized {left, top, right, bottom} format**.
+4.  **Comprehensive Extraction:** You must extract ALL data from the document (meeting the confidence threshold). Leave nothing out.
+5.  **Sequential Ordering:** The elements in the final 'extracted_elements' array must be sorted to strictly follow the top-to-bottom reading order of the source document.
+6.  **Hyper-Precise Bounding Box Coordinates (CRITICAL):** For every element, you MUST provide coordinates in a **normalized {left, top, right, bottom} format**. This is the most critical part of your task. Precision is paramount.
     - The origin (0,0) is the top-left corner of the page.
     - \`left\`: The distance from the left edge of the page to the left edge of the box (0.0 to 1.0).
     - \`top\`: The distance from the top edge of the page to the top edge of the box (0.0 to 1.0).
     - \`right\`: The distance from the left edge of the page to the right edge of the box (0.0 to 1.0).
     - \`bottom\`: The distance from the top edge of the page to the bottom edge of the box (0.0 to 1.0).
     - Provide up to 5 decimal places for precision.
-6.  **Crucial for Accuracy (Bounding Boxes):**
-    - **Complete Enclosure:** The bounding box MUST completely encompass the entire logical element.
-    - **Handling Spaced Text (HIGH PRIORITY):** For text elements composed of multiple words with significant spacing between them (e.g., a "THANK YOU" sign), you MUST treat it as a *single element*. The bounding box MUST start at the beginning of the first character of the first word (e.g., 'T') and end at the very end of the last character of the last word (e.g., 'U').
-    - **Failure Condition Example:** Creating a bounding box that only covers "THANK" and ignores "YOU" is a critical failure. The model must recognize these as part of the same phrase and create one single, all-encompassing bounding box.
-7.  **Granular Line Boxes for Tighter Fit:** For any element containing text that visibly spans multiple lines on the document (e.g., 'paragraph', long 'field' values), you MUST ALSO provide a 'line_boxes' array. Each item in this array should be a precise bounding box for a single line of text, also in the {left, top, right, bottom} format. This is crucial for creating a tight visual highlight.
-8.  **Element Categorization:** Classify each extracted element into one of the following types: 'field', 'field_group', 'table', 'paragraph', 'checkbox', 'logo', 'figure', 'marginalia', 'attestation'.
+7.  **Crucial Rules for Bounding Box Perfection:**
+    - **Pixel-Tight Fit:** The bounding box MUST be as tight as possible to the visible pixels of the text or element. There should be NO excessive padding or whitespace included inside the box.
+    - **Complete Enclosure:** Despite being tight, the box MUST completely encompass the entire logical element. Do not cut off parts of letters or symbols.
+    - **Handling Spaced/Fragmented Text (HIGH PRIORITY):** For text elements composed of multiple words with significant spacing between them (e.g., a "THANK YOU" sign spread across a page), you MUST treat it as a *single element*. The bounding box MUST start at the beginning of the first character of the first word (e.g., 'T') and end at the very end of the last character of the last word (e.g., 'U'), forming one single, all-encompassing rectangle.
+    - **Failure Condition Example:** For the text "First Name      John", creating one box for "First Name" and another for "John" is a failure if they represent a single logical field. You must identify it as a 'field' with label 'First Name' and value 'John' and create a bounding box that encloses BOTH parts.
+    - **DO NOT** create a bounding box around empty space. If an element's value is on a different part of the page from its label, the main \`bounding_box\` should cover both, and individual \`line_boxes\` can be used for the separate visual components.
+8.  **Granular Line Boxes for Tighter Fit:** For any element containing text that visibly spans multiple lines on the document (e.g., 'paragraph', long 'field' values), you MUST ALSO provide a 'line_boxes' array. Each item in this array should be a precise bounding box for a single line of text, also in the {left, top, right, bottom} format. This is crucial for creating a tight visual highlight.
+9.  **Element Categorization:** Classify each extracted element into one of the following types: 'field', 'field_group', 'table', 'paragraph', 'checkbox', 'logo', 'figure', 'marginalia', 'attestation'.
 
 **Type-Specific Instructions:**
 -   **field_group:** This is the preferred way to organize data. Use it liberally for sets of logically related fields. The 'bounding_box' for a group MUST encompass all of its child fields. Provide a clear and descriptive 'label' for the group (e.g., "Patient Information").
@@ -222,7 +206,14 @@ extractButton.addEventListener('click', async () => {
 **Failure Condition:**
 - If an image is of such low quality that OCR is impossible or produces nonsensical text, you MUST return an empty 'extracted_elements' array.
 
-The output must be a single, valid JSON object that strictly adheres to the provided schema, with no additional text or explanations.`,
+The output must be a single, valid JSON object that strictly adheres to the provided schema, with no additional text or explanations.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: {
+        parts: [
+          {
+            text: prompt,
           },
           {
             inlineData: fileData,
@@ -255,11 +246,19 @@ The output must be a single, valid JSON object that strictly adheres to the prov
       });
       setActiveTab('markdown');
       exportButton.disabled = true;
+      feedbackContainer?.classList.add('hidden');
     } else {
       // Original logic for successful extraction
       displayMarkdownResults(extractedData);
       displayJsonResults(parsedResult);
       exportButton.disabled = extractedData.length === 0;
+      // Show feedback controls
+      if (feedbackContainer && extractedData.length > 0) {
+        feedbackContainer.classList.remove('hidden');
+        feedbackGoodButton.disabled = false;
+        feedbackBadButton.disabled = false;
+        feedbackThanksSpan.classList.add('hidden');
+      }
       setActiveTab('markdown');
     }
   } catch (error) {
@@ -275,8 +274,70 @@ The output must be a single, valid JSON object that strictly adheres to the prov
     setActiveTab('markdown');
     extractedData = [];
     exportButton.disabled = true;
+    feedbackContainer?.classList.add('hidden');
   } finally {
     loadingSpinner.classList.add('hidden');
+  }
+}
+
+// --- Event Listeners ---
+
+fileUpload.addEventListener('change', async (event) => {
+  const target = event.target as HTMLInputElement;
+  if (target.files && target.files[0]) {
+    const selectedFile = target.files[0];
+    const supportedTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+    ];
+
+    if (!supportedTypes.includes(selectedFile.type)) {
+      uploadError.textContent = `Unsupported file type: '${selectedFile.type}'. Please upload a PDF, JPEG, PNG, GIF, or WebP.`;
+      uploadError.classList.remove('hidden');
+      // Reset state
+      fileUpload.value = '';
+      fileNameSpan.textContent = 'No file chosen';
+      extractButton.disabled = true;
+      ocrSlider.disabled = true;
+      file = null;
+      return;
+    }
+
+    uploadError.classList.add('hidden'); // Hide error if file is valid
+    file = selectedFile;
+    fileNameSpan.textContent = file.name;
+    extractButton.disabled = false;
+    ocrSlider.disabled = false;
+    try {
+      await renderPreview(file);
+    } catch (err) {
+      // Error is already displayed by renderPreview's internal catch blocks.
+      // We just need to log it and prevent further execution.
+      console.error('Render preview failed:', err);
+    }
+  } else {
+    fileNameSpan.textContent = 'No file chosen';
+    extractButton.disabled = true;
+    ocrSlider.disabled = true;
+    clearPreview();
+  }
+});
+
+extractButton.addEventListener('click', runExtraction);
+
+ocrSlider.addEventListener('input', () => {
+  if (ocrValueSpan) {
+    ocrValueSpan.textContent = `${ocrSlider.value}%`;
+  }
+});
+
+ocrSlider.addEventListener('change', () => {
+  // Only re-run if a file is already loaded and processed
+  if (file && fileData) {
+    runExtraction();
   }
 });
 
@@ -292,19 +353,42 @@ tabsContainer.addEventListener('click', (e) => {
 });
 
 jsonResultsContainer.addEventListener('click', (e) => {
+  if (currentlyEditing) return;
   const target = e.target as HTMLElement;
-  // Find the parent div that has the data-element-index
   const elementWrapper = target.closest(
     '.json-interactive-element',
   ) as HTMLElement;
 
-  if (elementWrapper && elementWrapper.dataset.elementIndex) {
+  if (elementWrapper?.dataset.elementIndex) {
     const index = parseInt(elementWrapper.dataset.elementIndex, 10);
     if (!isNaN(index) && extractedData[index]) {
       const element = extractedData[index];
-      drawBoundingBox(element);
+      drawBoundingBox(element, false); // Draw non-animated box on click
+      highlightMarkdownItem(index);
     }
   }
+});
+
+jsonResultsContainer.addEventListener('mouseover', (e) => {
+  if (currentlyEditing) return;
+  const target = e.target as HTMLElement;
+  const elementWrapper = target.closest(
+    '.json-interactive-element',
+  ) as HTMLElement;
+
+  if (elementWrapper?.dataset.elementIndex) {
+    const index = parseInt(elementWrapper.dataset.elementIndex, 10);
+    if (!isNaN(index) && extractedData[index]) {
+      const element = extractedData[index];
+      drawBoundingBox(element, true); // Draw animated box on hover
+      highlightMarkdownItem(index);
+    }
+  }
+});
+
+jsonResultsContainer.addEventListener('mouseleave', () => {
+  if (currentlyEditing) return;
+  clearBoundingBoxes();
 });
 
 exportButton.addEventListener('click', () => {
@@ -342,9 +426,24 @@ previewContainer.addEventListener('mousemove', (event) => {
 });
 
 previewContainer.addEventListener('mouseleave', () => {
+  if (currentlyEditing) return;
   clearBoundingBoxes();
   lastHoveredElementIndex = -1;
 });
+
+function handleFeedback(isGood: boolean) {
+  console.log(
+    `Bounding box accuracy feedback: ${
+      isGood ? 'Good' : 'Needs Improvement'
+    }. This data can be used for model retraining.`,
+  );
+  feedbackGoodButton.disabled = true;
+  feedbackBadButton.disabled = true;
+  feedbackThanksSpan.classList.remove('hidden');
+}
+
+feedbackGoodButton.addEventListener('click', () => handleFeedback(true));
+feedbackBadButton.addEventListener('click', () => handleFeedback(false));
 
 // --- UI Functions ---
 
@@ -363,57 +462,109 @@ function setActiveTab(tabName: string) {
   });
 }
 
-async function renderPreview(file: File) {
+/**
+ * Renders a preview of the uploaded file (PDF or image).
+ * This function is now fully asynchronous and resolves only after the
+ * file has been read and the preview is fully rendered, ensuring
+ * that page/image dimensions are available before proceeding.
+ */
+async function renderPreview(file: File): Promise<void> {
   clearPreview();
-  const reader = new FileReader();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
 
-  reader.onload = async (e) => {
-    const result = e.target.result as string;
-    const base64Data = result.split(',')[1];
-    fileData = {
-      mimeType: file.type,
-      data: base64Data,
+    reader.onload = async (e) => {
+      try {
+        const result = e.target?.result as string;
+        if (!result) {
+          throw new Error('FileReader returned an empty result.');
+        }
+        const base64Data = result.split(',')[1];
+        if (!base64Data) {
+          throw new Error('Could not parse base64 data from file.');
+        }
+
+        fileData = {
+          mimeType: file.type,
+          data: base64Data,
+        };
+
+        if (file.type === 'application/pdf') {
+          const pdf = await pdfjsLib.getDocument({ data: atob(base64Data) })
+            .promise;
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const canvas = document.createElement('canvas');
+            canvas.dataset.pageNumber = String(i);
+            const page = await pdf.getPage(i);
+
+            // Get viewport at scale 1.0 to store the true, unscaled dimensions.
+            const unscaledViewport = page.getViewport({ scale: 1.0 });
+            pageDimensions.push({
+              width: unscaledViewport.width,
+              height: unscaledViewport.height,
+            });
+
+            // Use a separate, scaled viewport for high-resolution rendering.
+            const renderScale = 1.5;
+            const renderViewport = page.getViewport({ scale: renderScale });
+            const context = canvas.getContext('2d');
+            canvas.height = renderViewport.height;
+            canvas.width = renderViewport.width;
+
+            await page.render({
+              canvasContext: context,
+              viewport: renderViewport,
+            }).promise;
+            previewContainer.appendChild(canvas);
+          }
+          resolve(); // Resolve after all PDF pages are rendered
+        } else {
+          // Image logic
+          const imagePreview = document.createElement('img');
+          imagePreview.alt = 'Image preview';
+          imagePreview.dataset.pageNumber = '1';
+          imagePreview.onload = () => {
+            pageDimensions.push({
+              width: imagePreview.naturalWidth,
+              height: imagePreview.naturalHeight,
+            });
+            previewContainer.appendChild(imagePreview);
+            resolve(); // Resolve only after the image is loaded and dimensions are stored
+          };
+          imagePreview.onerror = () => {
+            throw new Error(
+              'Could not load the image. It might be corrupted.',
+            );
+          };
+          imagePreview.src = result;
+        }
+      } catch (error) {
+        console.error('Error rendering preview:', error);
+        const message =
+          error instanceof Error ? error.message : 'An unknown error occurred.';
+        uploadError.textContent = `Failed to preview file. ${message}`;
+        uploadError.classList.remove('hidden');
+        // Reset state fully
+        fileUpload.value = '';
+        file = null;
+        fileData = null;
+        fileNameSpan.textContent = 'No file chosen';
+        extractButton.disabled = true;
+        ocrSlider.disabled = true;
+        clearPreview();
+        reject(error); // Reject the promise on failure
+      }
     };
 
-    if (file.type === 'application/pdf') {
-      const pdf = await pdfjsLib.getDocument({ data: atob(base64Data) })
-        .promise;
+    reader.onerror = () => {
+      console.error('FileReader error.');
+      uploadError.textContent = 'An error occurred while reading the file.';
+      uploadError.classList.remove('hidden');
+      reject(new Error('FileReader error.'));
+    };
 
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const canvas = document.createElement('canvas');
-        canvas.dataset.pageNumber = String(i);
-
-        const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 1.5 });
-        const context = canvas.getContext('2d');
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-
-        pageDimensions.push({
-          width: viewport.width,
-          height: viewport.height,
-        });
-
-        await page.render({ canvasContext: context, viewport: viewport })
-          .promise;
-        previewContainer.appendChild(canvas);
-      }
-    } else {
-      const imagePreview = document.createElement('img');
-      imagePreview.src = result;
-      imagePreview.alt = 'Image preview';
-      imagePreview.dataset.pageNumber = '1';
-
-      imagePreview.onload = () => {
-        pageDimensions.push({
-          width: imagePreview.naturalWidth,
-          height: imagePreview.naturalHeight,
-        });
-      };
-      previewContainer.appendChild(imagePreview);
-    }
-  };
-  reader.readAsDataURL(file);
+    reader.readAsDataURL(file);
+  });
 }
 
 function displayMarkdownResults(elements: any[]) {
@@ -428,8 +579,21 @@ function displayMarkdownResults(elements: any[]) {
     const resultItem = document.createElement('div');
     resultItem.className = 'result-item';
     resultItem.dataset.elementIndex = String(index);
-    resultItem.addEventListener('mouseover', () => drawBoundingBox(element));
-    resultItem.addEventListener('mouseout', clearBoundingBoxes);
+
+    const header = document.createElement('div');
+    header.className = 'result-item-header';
+    header.addEventListener('click', () => {
+      if (currentlyEditing?.index !== index) {
+        drawBoundingBox(element, false);
+      }
+    });
+
+    const content = document.createElement('div');
+    content.className = 'result-item-content';
+
+    const actions = document.createElement('div');
+    actions.className = 'result-item-actions';
+    actions.dataset.actionsIndex = String(index); // Link actions to the item
 
     switch (element.type) {
       case 'field':
@@ -440,7 +604,7 @@ function displayMarkdownResults(elements: any[]) {
       case 'marginalia':
       case 'attestation':
         resultItem.classList.add('field-item', `${element.type}-item`);
-        resultItem.innerHTML = `
+        content.innerHTML = `
           <span class="result-label">${element.label || element.type}</span>
           <span class="result-value">${element.value || 'N/A'}</span>
         `;
@@ -450,7 +614,7 @@ function displayMarkdownResults(elements: any[]) {
         resultItem.classList.add('field-group-item');
         const groupTitle = document.createElement('h3');
         groupTitle.textContent = element.label || 'Field Group';
-        resultItem.appendChild(groupTitle);
+        content.appendChild(groupTitle);
 
         if (element.fields && element.fields.length > 0) {
           const fieldsList = document.createElement('div');
@@ -466,7 +630,7 @@ function displayMarkdownResults(elements: any[]) {
               fieldsList.appendChild(fieldDiv);
             },
           );
-          resultItem.appendChild(fieldsList);
+          content.appendChild(fieldsList);
         }
         break;
 
@@ -474,7 +638,7 @@ function displayMarkdownResults(elements: any[]) {
         resultItem.classList.add('table-item');
         const tableTitle = document.createElement('h3');
         tableTitle.textContent = element.label || 'Extracted Table';
-        resultItem.appendChild(tableTitle);
+        content.appendChild(tableTitle);
 
         if (element.table_data && element.table_data.rows) {
           const table = document.createElement('table');
@@ -500,16 +664,23 @@ function displayMarkdownResults(elements: any[]) {
             tbody.appendChild(row);
           });
           table.appendChild(tbody);
-          resultItem.appendChild(table);
+          content.appendChild(table);
         } else {
-          resultItem.innerHTML += '<p>Table data is empty or malformed.</p>';
+          content.innerHTML += '<p>Table data is empty or malformed.</p>';
         }
         break;
 
       default:
         return; // Skip unknown types
     }
+
+    header.appendChild(content);
+    header.appendChild(actions);
+    resultItem.appendChild(header);
     markdownResultsContainer.appendChild(resultItem);
+
+    // After appending, populate the actions for this item
+    updateActionButtons(index);
   });
 }
 
@@ -540,7 +711,8 @@ function displayJsonResults(data: any) {
   };
 
   // If there's no data or it's an error object without extracted_elements
-  if (!data || !Array.isArray(data.extracted_elements)) {
+  const elements = data.extracted_elements || data;
+  if (!Array.isArray(elements)) {
     const content = syntaxHighlight(JSON.stringify(data, null, 2));
     jsonResultsContainer.innerHTML = content;
     return;
@@ -550,7 +722,7 @@ function displayJsonResults(data: any) {
   let finalHtml = '';
   finalHtml += `{<br>  <span class="json-key">"extracted_elements"</span>: [<br>`;
 
-  data.extracted_elements.forEach((element: any, index: number) => {
+  elements.forEach((element: any, index: number) => {
     const elementString = JSON.stringify(element, null, 2);
     const highlightedElementString = syntaxHighlight(elementString);
 
@@ -562,7 +734,7 @@ function displayJsonResults(data: any) {
       index,
     )}">${indentedHtml}</div>`;
 
-    if (index < data.extracted_elements.length - 1) {
+    if (index < elements.length - 1) {
       finalHtml += ',\n';
     } else {
       finalHtml += '\n';
@@ -574,8 +746,18 @@ function displayJsonResults(data: any) {
   jsonResultsContainer.innerHTML = finalHtml;
 }
 
-function drawBoundingBox(element: any) {
-  clearBoundingBoxes();
+// Fix: The getCoordinateSystem function returns a nested object. The original code
+// incorrectly destructured it, leading to errors. This version correctly
+// handles the nested structure and passes the full coordinate system object
+// where needed, resolving multiple related type errors.
+function drawBoundingBox(
+  element: any,
+  isAnimated = false,
+  isEditable = false,
+) {
+  if (!isEditable) {
+    clearBoundingBoxes();
+  }
 
   // Prioritize using granular line_boxes for a tighter fit,
   // otherwise fall back to the main bounding_box.
@@ -594,67 +776,42 @@ function drawBoundingBox(element: any) {
 
   if (!previewElement) return;
 
-  // Calculate scaling and offset details once.
-  const displayWidth = previewElement.clientWidth;
-  const displayHeight = previewElement.clientHeight;
-
-  const { width: contentWidth, height: contentHeight } =
-    pageDimensions[element.page - 1];
-
-  if (!contentWidth || !contentHeight) return;
-
-  const displayAspectRatio = displayWidth / displayHeight;
-  const contentAspectRatio = contentWidth / contentHeight;
-
-  let scale: number;
-  let offsetX = 0;
-  let offsetY = 0;
-
-  if (displayAspectRatio > contentAspectRatio) {
-    scale = displayHeight / contentHeight;
-    const scaledContentWidth = contentWidth * scale;
-    offsetX = (displayWidth - scaledContentWidth) / 2;
-  } else {
-    scale = displayWidth / contentWidth;
-    const scaledContentHeight = contentHeight * scale;
-    offsetY = (displayHeight - scaledContentHeight) / 2;
-  }
-
-  const containerRect = previewContainer.getBoundingClientRect();
-  const elementRect = previewElement.getBoundingClientRect();
-
-  const relativeTop =
-    elementRect.top - containerRect.top + previewContainer.scrollTop;
-  const relativeLeft =
-    elementRect.left - containerRect.left + previewContainer.scrollLeft;
+  const coordSystem = getCoordinateSystem(previewElement, element.page);
+  if (!coordSystem) return;
 
   // --- PRECISE SCROLL LOGIC ---
-  // Use the first box to determine the scroll position. If there are multiple
-  // boxes (e.g., line_boxes), this ensures we scroll to the start of the element.
-  const firstBox = boxesToDraw[0];
-  const boxY = firstBox.top * contentHeight * scale + offsetY;
-  const boxHeight = (firstBox.bottom - firstBox.top) * contentHeight * scale;
-
-  // Calculate the target scroll position to center the bounding box vertically
-  // within the visible area of the preview container.
-  const targetScrollTop =
-    relativeTop + // Top of the page/canvas within the scrollable area
-    boxY + // Top of the bounding box within the page/canvas
-    boxHeight / 2 - // Middle of the bounding box
-    previewContainer.clientHeight / 2; // Middle of the visible container area
-
-  previewContainer.scrollTo({
-    top: targetScrollTop,
-    behavior: 'smooth',
-  });
+  if (!isEditable) {
+    // Only scroll if not in edit mode
+    const firstBox = boxesToDraw[0];
+    const pageDim = pageDimensions[element.page - 1];
+    const boxY =
+      firstBox.top * pageDim.height * coordSystem.coords.scale +
+      coordSystem.coords.offsetY;
+    const boxHeight =
+      (firstBox.bottom - firstBox.top) *
+      pageDim.height *
+      coordSystem.coords.scale;
+    const targetScrollTop =
+      coordSystem.relativeTop +
+      boxY +
+      boxHeight / 2 -
+      previewContainer.clientHeight / 2;
+    previewContainer.scrollTo({
+      top: targetScrollTop,
+      behavior: 'smooth',
+    });
+  }
   // --- END PRECISE SCROLL LOGIC ---
 
   // Draw a div for each box.
-  boxesToDraw.forEach((box: any) => {
+  boxesToDraw.forEach((box: any, boxIndex: number) => {
     if (!box) return;
 
     const boundingBoxDiv = document.createElement('div');
     boundingBoxDiv.className = 'bounding-box';
+    if (isAnimated) {
+      boundingBoxDiv.classList.add('bounding-box-animated');
+    }
 
     if (element.type === 'figure' || element.type === 'logo') {
       boundingBoxDiv.classList.add('bounding-box-visual');
@@ -662,15 +819,24 @@ function drawBoundingBox(element: any) {
       boundingBoxDiv.classList.add('bounding-box-text');
     }
 
-    const boxX = box.left * contentWidth * scale + offsetX;
-    const boxY = box.top * contentHeight * scale + offsetY;
-    const boxWidth = (box.right - box.left) * contentWidth * scale;
-    const boxHeight = (box.bottom - box.top) * contentHeight * scale;
+    const {
+      page: { width: contentWidth, height: contentHeight },
+      pixels: { left, top, width, height },
+    } = normalizedToPixels(box, element.page, coordSystem);
 
-    boundingBoxDiv.style.left = `${relativeLeft + boxX}px`;
-    boundingBoxDiv.style.top = `${relativeTop + boxY}px`;
-    boundingBoxDiv.style.width = `${boxWidth}px`;
-    boundingBoxDiv.style.height = `${boxHeight}px`;
+    boundingBoxDiv.style.left = `${left}px`;
+    boundingBoxDiv.style.top = `${top}px`;
+    boundingBoxDiv.style.width = `${width}px`;
+    boundingBoxDiv.style.height = `${height}px`;
+
+    if (isEditable) {
+      boundingBoxDiv.classList.add('editable');
+      // Store reference to the original box data for updating
+      // We use a property on the element to avoid globals
+      (boundingBoxDiv as any).originalBoxData = box;
+      (boundingBoxDiv as any).boxIndex = boxIndex;
+      makeBoxEditable(boundingBoxDiv);
+    }
 
     previewContainer.appendChild(boundingBoxDiv);
   });
@@ -680,8 +846,9 @@ function clearBoundingBoxes() {
   const existingBoxes = document.querySelectorAll('.bounding-box');
   existingBoxes.forEach((box) => box.remove());
 
-  const highlightedItems = document.querySelectorAll('.result-item.highlighted');
-  highlightedItems.forEach((item) => item.classList.remove('highlighted'));
+  document
+    .querySelectorAll('.result-item.highlighted')
+    .forEach((item) => item.classList.remove('highlighted'));
 }
 
 function clearResults() {
@@ -689,6 +856,7 @@ function clearResults() {
   jsonResultsContainer.textContent = '';
   extractedData = [];
   exportButton.disabled = true;
+  feedbackContainer?.classList.add('hidden');
 }
 
 function clearPreview() {
@@ -701,8 +869,27 @@ function clearPreview() {
   uploadError.classList.add('hidden');
 }
 
+function highlightMarkdownItem(index: number) {
+  const resultItem = markdownResultsContainer.querySelector(
+    `[data-element-index='${index}']`,
+  );
+  if (resultItem) {
+    document
+      .querySelectorAll('.result-item.highlighted')
+      .forEach((item) => item.classList.remove('highlighted'));
+    resultItem.classList.add('highlighted');
+    resultItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
 function handlePreviewMouseMove(event: MouseEvent) {
-  if (isThrottled || !extractedData || extractedData.length === 0) return;
+  if (
+    isThrottled ||
+    !extractedData ||
+    extractedData.length === 0 ||
+    currentlyEditing
+  )
+    return;
   isThrottled = true;
   setTimeout(() => (isThrottled = false), 50); // throttle calls
 
@@ -721,23 +908,10 @@ function handlePreviewMouseMove(event: MouseEvent) {
   const pageDim = pageDimensions[pageNum - 1];
   if (!pageDim) return;
 
-  const { width: contentWidth, height: contentHeight } = pageDim;
-  const displayWidth = pageEl.clientWidth;
-  const displayHeight = pageEl.clientHeight;
-
-  const displayAspectRatio = displayWidth / displayHeight;
-  const contentAspectRatio = contentWidth / contentHeight;
-
-  let scale: number;
-  let offsetX = 0;
-  let offsetY = 0;
-  if (displayAspectRatio > contentAspectRatio) {
-    scale = displayHeight / contentHeight;
-    offsetX = (displayWidth - contentWidth * scale) / 2;
-  } else {
-    scale = displayWidth / contentWidth;
-    offsetY = (displayHeight - contentHeight * scale) / 2;
-  }
+  const {
+    page: { width: contentWidth, height: contentHeight },
+    coords: { scale, offsetX, offsetY },
+  } = getCoordinateSystem(pageEl, pageNum);
 
   // event.offsetX/Y are relative to the target element (the canvas/image)
   const normalizedX = (event.offsetX - offsetX) / (contentWidth * scale);
@@ -775,17 +949,319 @@ function handlePreviewMouseMove(event: MouseEvent) {
     clearBoundingBoxes();
     if (foundElementIndex !== -1) {
       const element = extractedData[foundElementIndex];
-      drawBoundingBox(element);
-      const resultItem = markdownResultsContainer.querySelector(
-        `[data-element-index='${foundElementIndex}']`,
-      );
-      if (resultItem) {
-        resultItem.classList.add('highlighted');
-        resultItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
+      drawBoundingBox(element, false);
+      highlightMarkdownItem(foundElementIndex);
     }
     lastHoveredElementIndex = foundElementIndex;
   }
+}
+
+// --- Bounding Box Editor Functions ---
+
+function enterEditMode(index: number) {
+  if (currentlyEditing) {
+    // If trying to edit the same one, do nothing.
+    if (currentlyEditing.index === index) return;
+    // Otherwise, cancel the previous edit.
+    exitEditMode(false);
+  }
+
+  const element = extractedData[index];
+  if (!element) return;
+
+  currentlyEditing = {
+    index,
+    // Deep copy for restoration on cancel
+    originalElement: JSON.parse(JSON.stringify(element)),
+  };
+
+  clearBoundingBoxes(); // Clear any hover boxes
+  drawBoundingBox(element, false, true); // Draw the editable boxes
+  updateActionButtons(index, true); // Show save/cancel
+
+  // Highlight the item being edited
+  const resultItem = markdownResultsContainer.querySelector(
+    `[data-element-index='${index}']`,
+  );
+  resultItem?.classList.add('is-editing');
+  resultItem?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function exitEditMode(shouldSave: boolean) {
+  if (!currentlyEditing) return;
+
+  const { index, originalElement } = currentlyEditing;
+
+  if (shouldSave) {
+    updateElementFromEditableBoxes(index);
+    // After saving, the current state is the new "original" state
+    // so we just clear the edit session.
+  } else {
+    // Restore the original data on cancel
+    extractedData[index] = originalElement;
+  }
+
+  currentlyEditing = null;
+
+  // UI cleanup
+  const resultItem = markdownResultsContainer.querySelector(
+    `[data-element-index='${index}']`,
+  );
+  resultItem?.classList.remove('is-editing');
+
+  updateActionButtons(index, false); // Revert to edit button
+  clearBoundingBoxes(); // Remove editable boxes
+  displayJsonResults({ extracted_elements: extractedData }); // Refresh JSON view
+}
+
+function updateActionButtons(index: number, isEditing = false) {
+  const actionsContainer = markdownResultsContainer.querySelector(
+    `[data-actions-index='${index}']`,
+  );
+  if (!actionsContainer) return;
+
+  actionsContainer.innerHTML = ''; // Clear existing buttons
+
+  const createBtn = (id: 'edit' | 'save' | 'cancel', onClick: () => void) => {
+    const btn = document.createElement('button');
+    btn.className = `result-action-btn ${id}-btn`;
+    const icon = document.getElementById(`icon-${id}`).cloneNode(true);
+    btn.appendChild(icon);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation(); // Prevent header click event
+      onClick();
+    });
+    return btn;
+  };
+
+  if (isEditing) {
+    const saveButton = createBtn('save', () => exitEditMode(true));
+    const cancelButton = createBtn('cancel', () => exitEditMode(false));
+    actionsContainer.appendChild(saveButton);
+    actionsContainer.appendChild(cancelButton);
+  } else {
+    const editButton = createBtn('edit', () => enterEditMode(index));
+    actionsContainer.appendChild(editButton);
+  }
+}
+
+function makeBoxEditable(boxDiv: HTMLElement) {
+  const handles = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+  handles.forEach((handleName) => {
+    const handle = document.createElement('div');
+    handle.className = `resize-handle ${handleName}`;
+    handle.addEventListener('mousedown', (e) =>
+      initResize(e, boxDiv, handleName),
+    );
+    boxDiv.appendChild(handle);
+  });
+  boxDiv.addEventListener('mousedown', (e) => initDrag(e, boxDiv));
+}
+
+function initDrag(e: MouseEvent, boxDiv: HTMLElement) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const startLeft = boxDiv.offsetLeft;
+  const startTop = boxDiv.offsetTop;
+
+  const doDrag = (moveEvent: MouseEvent) => {
+    const dx = moveEvent.clientX - startX;
+    const dy = moveEvent.clientY - startY;
+    boxDiv.style.left = `${startLeft + dx}px`;
+    boxDiv.style.top = `${startTop + dy}px`;
+  };
+
+  const stopDrag = () => {
+    document.removeEventListener('mousemove', doDrag);
+    document.removeEventListener('mouseup', stopDrag);
+  };
+
+  document.addEventListener('mousemove', doDrag);
+  document.addEventListener('mouseup', stopDrag);
+}
+
+function initResize(e: MouseEvent, boxDiv: HTMLElement, handle: string) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const startWidth = boxDiv.offsetWidth;
+  const startHeight = boxDiv.offsetHeight;
+  const startLeft = boxDiv.offsetLeft;
+  const startTop = boxDiv.offsetTop;
+
+  const doResize = (moveEvent: MouseEvent) => {
+    const dx = moveEvent.clientX - startX;
+    const dy = moveEvent.clientY - startY;
+
+    if (handle.includes('e')) {
+      boxDiv.style.width = `${startWidth + dx}px`;
+    }
+    if (handle.includes('w')) {
+      boxDiv.style.width = `${startWidth - dx}px`;
+      boxDiv.style.left = `${startLeft + dx}px`;
+    }
+    if (handle.includes('s')) {
+      boxDiv.style.height = `${startHeight + dy}px`;
+    }
+    if (handle.includes('n')) {
+      boxDiv.style.height = `${startHeight - dy}px`;
+      boxDiv.style.top = `${startTop + dy}px`;
+    }
+  };
+
+  const stopResize = () => {
+    document.removeEventListener('mousemove', doResize);
+    document.removeEventListener('mouseup', stopResize);
+  };
+
+  document.addEventListener('mousemove', doResize);
+  document.addEventListener('mouseup', stopResize);
+}
+
+function updateElementFromEditableBoxes(elementIndex: number) {
+  const element = extractedData[elementIndex];
+  if (!element) return;
+
+  const editableBoxes = document.querySelectorAll(
+    '.bounding-box.editable',
+  ) as NodeListOf<HTMLElement>;
+
+  editableBoxes.forEach((boxDiv) => {
+    const boxIndex = (boxDiv as any).boxIndex;
+    const originalBoxRef = (boxDiv as any).originalBoxData;
+
+    if (originalBoxRef === undefined) return;
+
+    const newPixelBounds = {
+      left: boxDiv.offsetLeft,
+      top: boxDiv.offsetTop,
+      width: boxDiv.offsetWidth,
+      height: boxDiv.offsetHeight,
+    };
+
+    const newNormalizedBox = pixelsToNormalized(newPixelBounds, element.page);
+
+    // Update the correct box in the element data
+    if (
+      element.line_boxes &&
+      element.line_boxes.length > 0 &&
+      boxIndex !== undefined
+    ) {
+      element.line_boxes[boxIndex] = newNormalizedBox;
+    } else if (element.bounding_box) {
+      element.bounding_box = newNormalizedBox;
+    }
+  });
+}
+
+// --- Coordinate Conversion Utilities ---
+
+/**
+ * Calculates the scaling and offset parameters for a given page element.
+ * Uses high-precision `getBoundingClientRect` for pixel-perfect accuracy.
+ */
+function getCoordinateSystem(previewElement: HTMLElement, pageNum: number) {
+  const pageDim = pageDimensions[pageNum - 1];
+  if (!pageDim) return null;
+
+  // Use getBoundingClientRect for more precise, floating-point dimensions.
+  const elementRect = previewElement.getBoundingClientRect();
+  const displayWidth = elementRect.width;
+  const displayHeight = elementRect.height;
+
+  const { width: contentWidth, height: contentHeight } = pageDim;
+
+  const displayAspectRatio = displayWidth / displayHeight;
+  const contentAspectRatio = contentWidth / contentHeight;
+
+  let scale: number;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  if (displayAspectRatio > contentAspectRatio) {
+    // Display is wider than content (letterboxed)
+    scale = displayHeight / contentHeight;
+    offsetX = (displayWidth - contentWidth * scale) / 2;
+  } else {
+    // Display is taller than content (pillarboxed)
+    scale = displayWidth / contentWidth;
+    offsetY = (displayHeight - contentHeight * scale) / 2;
+  }
+
+  const containerRect = previewContainer.getBoundingClientRect();
+  const relativeTop =
+    elementRect.top - containerRect.top + previewContainer.scrollTop;
+  const relativeLeft =
+    elementRect.left - containerRect.left + previewContainer.scrollLeft;
+
+  return {
+    page: { width: contentWidth, height: contentHeight },
+    display: { width: displayWidth, height: displayHeight },
+    coords: { scale, offsetX, offsetY },
+    relativeTop,
+    relativeLeft,
+  };
+}
+
+/**
+ * Converts normalized coordinates to absolute pixel values for display.
+ */
+function normalizedToPixels(
+  box: any,
+  pageNum: number,
+  coordSystem: ReturnType<typeof getCoordinateSystem>,
+) {
+  const {
+    page: { width: contentWidth, height: contentHeight },
+    coords: { scale, offsetX, offsetY },
+    relativeTop,
+    relativeLeft,
+  } = coordSystem;
+
+  const left = relativeLeft + box.left * contentWidth * scale + offsetX;
+  const top = relativeTop + box.top * contentHeight * scale + offsetY;
+  const width = (box.right - box.left) * contentWidth * scale;
+  const height = (box.bottom - box.top) * contentHeight * scale;
+
+  return {
+    page: { width: contentWidth, height: contentHeight },
+    pixels: { left, top, width, height },
+  };
+}
+
+/**
+ * Converts absolute pixel values back to normalized coordinates.
+ */
+function pixelsToNormalized(pixelBounds: any, pageNum: number) {
+  const previewElement = document.querySelector(
+    `#preview-container [data-page-number='${pageNum}']`,
+  ) as HTMLElement;
+  if (!previewElement) return null;
+
+  const {
+    page: { width: contentWidth, height: contentHeight },
+    coords: { scale, offsetX, offsetY },
+    relativeTop,
+    relativeLeft,
+  } = getCoordinateSystem(previewElement, pageNum);
+
+  const absoluteLeft = pixelBounds.left - relativeLeft;
+  const absoluteTop = pixelBounds.top - relativeTop;
+
+  const norm = {
+    left: (absoluteLeft - offsetX) / (contentWidth * scale),
+    top: (absoluteTop - offsetY) / (contentHeight * scale),
+    right:
+      (absoluteLeft + pixelBounds.width - offsetX) / (contentWidth * scale),
+    bottom:
+      (absoluteTop + pixelBounds.height - offsetY) / (contentHeight * scale),
+  };
+  return norm;
 }
 
 // --- Export Functions ---
